@@ -2,18 +2,15 @@
 #define LIGHTNING_WALLET_INVOICES_H
 #include "config.h"
 #include <bitcoin/preimage.h>
-#include <ccan/short_types/short_types.h>
-#include <ccan/take/take.h>
 #include <ccan/tal/tal.h>
 
 struct amount_msat;
 struct db;
-struct json_escaped;
+struct json_escape;
 struct invoice;
 struct invoice_details;
 struct invoice_iterator;
 struct invoices;
-struct log;
 struct sha256;
 struct timers;
 
@@ -22,12 +19,10 @@ struct timers;
  *
  * @ctx - the owner of the invoice handler.
  * @db - the database connection to use for saving invoice.
- * @log - the log to report to.
  * @timers - the timers object to use for expirations.
  */
 struct invoices *invoices_new(const tal_t *ctx,
 			      struct db *db,
-			      struct log *log,
 			      struct timers *timers);
 
 /**
@@ -49,12 +44,14 @@ struct invoices *invoices_new(const tal_t *ctx,
 bool invoices_create(struct invoices *invoices,
 		     struct invoice *pinvoice,
 		     const struct amount_msat *msat TAKES,
-		     const struct json_escaped *label TAKES,
+		     const struct json_escape *label TAKES,
 		     u64 expiry,
 		     const char *b11enc,
 		     const char *description,
+		     const u8 *features,
 		     const struct preimage *r,
-		     const struct sha256 *rhash);
+		     const struct sha256 *rhash,
+		     const struct sha256 *local_offer_id);
 
 /**
  * invoices_find_by_label - Search for an invoice by label
@@ -68,7 +65,7 @@ bool invoices_create(struct invoices *invoices,
  */
 bool invoices_find_by_label(struct invoices *invoices,
 			    struct invoice *pinvoice,
-			    const struct json_escaped *label);
+			    const struct json_escape *label);
 
 /**
  * invoices_find_by_rhash - Search for an invoice by
@@ -122,22 +119,6 @@ void invoices_delete_expired(struct invoices *invoices,
 			     u64 max_expiry_time);
 
 /**
- * invoices_autoclean_set - Set up automatic deletion of
- * expired invoices.
- *
- * @invoices - the invoice handler.
- * @cycle_seconds - The number of seconds to repeat the
- * automatic deletion. If 0, do not perform automatic
- * deletion.
- * @expiry_by - Each cycle, delete invoices that
- * have been expired for at least `expiry_by`
- * seconds.
- */
-void invoices_autoclean_set(struct invoices *invoices,
-			    u64 cycle_seconds,
-			    u64 expired_by);
-
-/**
  * invoices_iterate - Iterate over all existing invoices
  *
  * @invoices - the invoice handler.
@@ -176,10 +157,9 @@ const struct invoice_details *invoices_iterator_deref(
  * @invoice - the invoice to mark as paid.
  * @received - the actual amount received.
  *
- * Precondition: the invoice must not yet be expired (invoices
- * does not check).
+ * If the invoice is not UNPAID, returns false.
  */
-void invoices_resolve(struct invoices *invoices,
+bool invoices_resolve(struct invoices *invoices,
 		      struct invoice invoice,
 		      struct amount_msat received);
 

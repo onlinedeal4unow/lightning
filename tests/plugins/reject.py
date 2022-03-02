@@ -7,16 +7,16 @@ continue.
 
 """
 
-from lightning import Plugin
+from pyln.client import Plugin
 
 plugin = Plugin()
 
 
 @plugin.hook('peer_connected')
-def on_connected(peer, plugin):
+def on_connected(peer, plugin, **kwargs):
     if peer['id'] in plugin.reject_ids:
         print("{} is in reject list, disconnecting".format(peer['id']))
-        return {'result': 'disconnect'}
+        return {'result': 'disconnect', 'error_message': 'You are in reject list'}
 
     print("{} is allowed".format(peer['id']))
     return {'result': 'continue'}

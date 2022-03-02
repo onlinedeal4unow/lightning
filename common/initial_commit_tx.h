@@ -2,11 +2,15 @@
 #ifndef LIGHTNING_COMMON_INITIAL_COMMIT_TX_H
 #define LIGHTNING_COMMON_INITIAL_COMMIT_TX_H
 #include "config.h"
+#include <bitcoin/chainparams.h>
 #include <bitcoin/pubkey.h>
-#include <common/amount.h>
+#include <bitcoin/tx.h>
 #include <common/htlc.h>
+#include <common/utils.h>
 
+struct bitcoin_outpoint;
 struct keyset;
+struct wally_tx_output;
 
 /* BOLT #3:
  *
@@ -18,19 +22,23 @@ struct keyset;
 u64 commit_number_obscurer(const struct pubkey *opener_payment_basepoint,
 			   const struct pubkey *accepter_payment_basepoint);
 
-/* Helper to calculate the base fee if we have this many htlc outputs */
-static inline struct amount_sat commit_tx_base_fee(u32 feerate_per_kw,
-						   size_t num_untrimmed_htlcs)
+
+/* The base weight of a commitment tx */
+static inline size_t commit_tx_base_weight(size_t num_untrimmed_htlcs,
+					   bool option_anchor_outputs)
 {
-	u64 weight;
+	size_t weight;
 
 	/* BOLT #3:
 	 *
 	 * The base fee for a commitment transaction:
 	 *  - MUST be calculated to match:
-	 *    1. Start with `weight` = 724.
+	 *    1. Start with `weight` = 724 (1124 if `option_anchors` applies).
 	 */
-	weight = 724;
+	if (option_anchor_outputs)
+		weight = 1124;
+	else
+		weight = 724;
 
 	/* BOLT #3:
 	 *
@@ -40,19 +48,29 @@ static inline struct amount_sat commit_tx_base_fee(u32 feerate_per_kw,
 	 */
 	weight += 172 * num_untrimmed_htlcs;
 
-	/* BOLT #3:
-	 *
-	 *    3. Multiply `feerate_per_kw` by `weight`, divide by 1000 (rounding
-	 *    down).
-	 */
-	return amount_tx_fee(feerate_per_kw, weight);
+	/* Extra fields for Elements */
+	weight += elements_tx_overhead(chainparams, 1, 1);
+
+	return weight;
+}
+
+/* Helper to calculate the base fee if we have this many htlc outputs */
+static inline struct amount_sat commit_tx_base_fee(u32 feerate_per_kw,
+						   size_t num_untrimmed_htlcs,
+						   bool option_anchor_outputs)
+{
+	return amount_tx_fee(feerate_per_kw,
+			     commit_tx_base_weight(num_untrimmed_htlcs,
+						   option_anchor_outputs));
 }
 
 /**
  * initial_commit_tx: create (unsigned) commitment tx to spend the funding tx output
  * @ctx: context to allocate transaction and @htlc_map from.
- * @funding_txid, @funding_out, @funding: funding outpoint.
- * @funder: is the LOCAL or REMOTE paying the fee?
+ * @funding, @funding_sats: funding outpoint and amount
+ * @funding_wscript: scriptPubkey of the funding output
+ * @funding_keys: funding bitcoin keys
+ * @opener: is the LOCAL or REMOTE paying the fee?
  * @keyset: keys derived for this commit tx.
  * @feerate_per_kw: feerate to use
  * @dust_limit: dust limit below which to trim outputs.
@@ -60,17 +78,20 @@ static inline struct amount_sat commit_tx_base_fee(u32 feerate_per_kw,
  * @other_pay: amount to pay directly to the other side
  * @self_reserve: reserve the other side insisted we have
  * @obscured_commitment_number: number to encode in commitment transaction
+ * @direct_outputs: If non-NULL, fill with pointers to the direct (non-HTLC) outputs (or NULL if none).
  * @side: side to generate commitment transaction for.
+ * @option_anchor_outputs: does option_anchor_outputs apply to this channel?
+ * @err_reason: When NULL is returned, this will point to a human readable reason.
  *
  * We need to be able to generate the remote side's tx to create signatures,
  * but the BOLT is expressed in terms of generating our local commitment
  * transaction, so we carefully use the terms "self" and "other" here.
  */
 struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
-				     const struct bitcoin_txid *funding_txid,
-				     unsigned int funding_txout,
-				     struct amount_sat funding,
-				     enum side funder,
+				     const struct bitcoin_outpoint *funding,
+				     struct amount_sat funding_sats,
+				     const struct pubkey funding_key[NUM_SIDES],
+				     enum side opener,
 				     u16 to_self_delay,
 				     const struct keyset *keyset,
 				     u32 feerate_per_kw,
@@ -79,10 +100,14 @@ struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
 				     struct amount_msat other_pay,
 				     struct amount_sat self_reserve,
 				     u64 obscured_commitment_number,
-				     enum side side);
+				     struct wally_tx_output *direct_outputs[NUM_SIDES],
+				     enum side side,
+				     u32 csv_lock,
+				     bool option_anchor_outputs,
+				     char** err_reason);
 
-/* try_subtract_fee - take away this fee from the funder (and return true), or all if insufficient (and return false). */
-bool try_subtract_fee(enum side funder, enum side side,
+/* try_subtract_fee - take away this fee from the opener (and return true), or all if insufficient (and return false). */
+bool try_subtract_fee(enum side opener, enum side side,
 		      struct amount_sat base_fee,
 		      struct amount_msat *self,
 		      struct amount_msat *other);
@@ -91,8 +116,13 @@ bool try_subtract_fee(enum side funder, enum side side,
  * scriptpubkey_p2wsh(ctx, wscript) gives the scriptpubkey */
 u8 *to_self_wscript(const tal_t *ctx,
 		    u16 to_self_delay,
+		    u32 csv,
 		    const struct keyset *keyset);
 
 /* To-other is simply: scriptpubkey_p2wpkh(tx, keyset->other_payment_key) */
+
+/* If we determine we need one, append this anchor output */
+void tx_add_anchor_output(struct bitcoin_tx *tx,
+			  const struct pubkey *funding_key);
 
 #endif /* LIGHTNING_COMMON_INITIAL_COMMIT_TX_H */
